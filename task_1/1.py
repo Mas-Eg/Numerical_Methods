@@ -1,106 +1,117 @@
 import numpy as np
 
-np.set_printoptions(precision=4, suppress=True)
-
-
-def gauss_solve(A, b, partial_pivoting=True, tol=0.0):
+def richardson(A, b, x0=None, tau=None, tol=1e-8, max_iter=10000, verbose=True):
     """
-    Решение СЛАУ Ax = b методом Гаусса.
+    Решение СЛАУ Ax = b методом установления (Ричардсона).
 
-    partial_pivoting=True  — с частичным выбором ведущего элемента по столбцу.
-    partial_pivoting=False — naive-Гаусс без выбора ведущего элемента.
-    tol — порог для обнаружения нулевого ведущего элемента.
+    Параметры
+    ---------
+    A        : (n,n) ndarray, матрица системы (желательно SPD)
+    b        : (n,) ndarray, правая часть
+    x0       : (n,) ndarray, начальное приближение (по умолчанию — нули)
+    tau      : float, шаг итерации. Если None — берётся оптимальный по спектру.
+    tol      : float, критерий остановки по невязке ||b - Ax||
+    max_iter : int, максимум итераций
+    verbose  : bool, печать прогресса
+
+    Возвращает
+    ----------
+    x        : приближённое решение
+    iters    : число выполненных итераций
+    history  : список норм невязки по итерациям
     """
-    A = np.array(A, dtype=float)
-    b = np.array(b, dtype=float).copy()
+    A = np.asarray(A, dtype=float)
+    b = np.asarray(b, dtype=float)
+    n = b.size
 
-    n = A.shape[0]
-    if A.shape[0] != A.shape[1]:
-        raise ValueError("Матрица A должна быть квадратной")
-    if b.size != n:
-        raise ValueError("Размер b не совпадает с размером A")
+    if x0 is None:
+        x = np.zeros(n)
+    else:
+        x = np.array(x0, dtype=float)
 
-    for k in range(n):
-        if partial_pivoting:
-            p = k + np.argmax(np.abs(A[k:, k]))
-            if abs(A[p, k]) <= tol:
-                raise np.linalg.LinAlgError("Матрица вырождена или почти вырождена")
-            if p != k:
-                A[[k, p], :] = A[[p, k], :]
-                b[[k, p]] = b[[p, k]]
-        else:
-            if abs(A[k, k]) <= tol:
-                raise np.linalg.LinAlgError("Нулевой ведущий элемент")
+    # Автоматический выбор оптимального шага по спектру
+    if tau is None:
+        # Для SPD матрицы собственные значения вещественны и положительны
+        eigvals = np.linalg.eigvalsh((A + A.T) / 2.0)
+        lam_min = max(eigvals.min(), 1e-15)
+        lam_max = eigvals.max()
+        tau = 2.0 / (lam_min + lam_max)
+        if verbose:
+            print(f"[auto] λ_min={lam_min:.6g}, λ_max={lam_max:.6g}, "
+                  f"τ_opt={tau:.6g}, κ={lam_max/lam_min:.3g}")
 
-        # Прямой ход: исключаем неизвестные ниже диагонали
-        for i in range(k + 1, n):
-            factor = A[i, k] / A[k, k]
-            A[i, k:] -= factor * A[k, k:]
-            b[i] -= factor * b[k]
+    history = []
+    for k in range(1, max_iter + 1):
+        r = b - A @ x                 # невязка
+        rnorm = np.linalg.norm(r)
+        history.append(rnorm)
 
-    # Обратный ход
-    x = np.zeros(n)
-    for i in range(n - 1, -1, -1):
-        if abs(A[i, i]) <= tol:
-            raise np.linalg.LinAlgError("Матрица вырождена")
-        x[i] = (b[i] - A[i, i + 1:] @ x[i + 1:]) / A[i, i]
+        if rnorm < tol:
+            if verbose:
+                print(f"Сошлось за {k-1} итераций, ||r|| = {rnorm:.3e}")
+            return x, k - 1, history
 
-    return x
+        x = x + tau * r               # x_{k+1} = x_k + τ(b - A x_k)
 
-
-def rel_error(x, x_true):
-    return np.linalg.norm(x - x_true) / np.linalg.norm(x_true)
+    if verbose:
+        print(f"Достигнут предел итераций ({max_iter}), ||r|| = {history[-1]:.3e}")
+    return x, max_iter, history
 
 
-def rel_residual(A, x, b):
-    return np.linalg.norm(A @ x - b) / np.linalg.norm(b)
+# ======================= ПРИМЕРЫ ДЛЯ ПРОВЕРКИ =======================
+if __name__ == "__main__":
 
-print("=== 1. Хорошо обусловленная система ===")
+    # -------- Пример 1: маленькая SPD-система --------
+    print("=" * 60)
+    print("ПРИМЕР 1: симметричная положительно определённая 4x4")
+    print("=" * 60)
 
-A = np.array([[4., 1., 2.],
-              [1., 3., 0.],
-              [2., 0., 5.]])
+    A1 = np.array([
+        [ 4.0, -1.0,  0.0,  0.0],
+        [-1.0,  4.0, -1.0,  0.0],
+        [ 0.0, -1.0,  4.0, -1.0],
+        [ 0.0,  0.0, -1.0,  3.0],
+    ])
+    b1 = np.array([1.0, 2.0, 3.0, 4.0])
 
-x_true = np.array([1., 2., 3.])
-b = A @ x_true
+    x_exact = np.linalg.solve(A1, b1)
+    x_num, iters, hist = richardson(A1, b1, tol=1e-10)
 
-x = gauss_solve(A, b)
+    print("Точное решение      :", np.round(x_exact, 6))
+    print("Метод Ричардсона    :", np.round(x_num, 6))
+    print("Итераций            :", iters)
+    print("Ошибка ||x - x*||   :", np.linalg.norm(x_num - x_exact))
+    print()
 
-print("cond(A) =", np.linalg.cond(A))
-print("x       =", x)
-print("ошибка  =", rel_error(x, x_true))
-print("невязка =", rel_residual(A, x, b))
+    # -------- Пример 2: плохо обусловленная матрица (Гильберт) --------
+    print("=" * 60)
+    print("ПРИМЕР 2: плохо обусловленная матрица Гильберта 6x6")
+    print("=" * 60)
 
-print("\n=== 2. Маленький ведущий элемент ===")
+    n = 6
+    A2 = np.array([[1.0/(i + j + 1) for j in range(n)] for i in range(n)])
+    b2 = A2 @ np.ones(n)   # точное решение — вектор из единиц
 
-A = np.array([[1e-20, 1.],
-              [1.,     1.]])
-b = np.array([1., 2.])
+    x_num2, iters2, hist2 = richardson(A2, b2, tol=1e-6, max_iter=20000)
 
-x_no_pivot = gauss_solve(A, b, partial_pivoting=False)
-x_pivot    = gauss_solve(A, b, partial_pivoting=True)
-x_np       = np.linalg.solve(A, b)
+    print("Точное решение      :", np.ones(n))
+    print("Метод Ричардсона    :", np.round(x_num2, 6))
+    print("Итераций            :", iters2)
+    print("Ошибка ||x - x*||   :", np.linalg.norm(x_num2 - np.ones(n)))
 
-print("cond(A) =", np.linalg.cond(A))
-print("без выбора          :", x_no_pivot)
-print("с частичным выбором :", x_pivot)
-print("numpy.linalg.solve  :", x_np)
+    # -------- Пример 3: сравнение с numpy --------
+    print()
+    print("=" * 60)
+    print("ПРИМЕР 3: сверка с numpy.linalg.solve")
+    print("=" * 60)
 
-print("\n=== 3. Плохо обусловленная матрица Гильберта ===")
+    rng = np.random.default_rng(0)
+    M = rng.normal(size=(10, 10))
+    A3 = M.T @ M + 10 * np.eye(10)      # SPD, хорошо обусловлена
+    b3 = rng.normal(size=10)
 
-n = 12
-A = np.array([[1.0 / (i + j + 1) for j in range(n)] for i in range(n)])
+    x_np   = np.linalg.solve(A3, b3)
+    x_rich, it3, _ = richardson(A3, b3, tol=1e-10)
 
-x_true = np.ones(n)
-b = A @ x_true
-
-x_gauss = gauss_solve(A, b)
-x_np = np.linalg.solve(A, b)
-
-print("n =", n)
-print("cond(A) =", np.linalg.cond(A))
-print("ошибка  (Gauss) =", rel_error(x_gauss, x_true))
-print("невязка (Gauss) =", rel_residual(A, x_gauss, b))
-print("ошибка  (numpy) =", rel_error(x_np, x_true))
-print("невязка (numpy) =", rel_residual(A, x_np, b))
-print("x[:5] =", x_gauss[:5])
+    print("||x_rich - x_numpy|| =", np.linalg.norm(x_rich - x_np))
+    print("Итераций            :", it3)
